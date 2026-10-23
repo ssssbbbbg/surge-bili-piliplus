@@ -43,22 +43,60 @@ enum CidResolver {
         }
 
         guard let url = URL(string: "https://api.bilibili.com/x/player/pagelist?bvid=\(bvid)") else {
+            DLog("cid: URL 构造失败")
             completion(nil)
             return
         }
 
         var req = URLRequest(url: url)
-        req.timeoutInterval = 6
+        req.timeoutInterval = 8
+        req.cachePolicy = .reloadIgnoringLocalCacheData
         req.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
-        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+        req.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Origin")
+        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                      forHTTPHeaderField: "User-Agent")
+        req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
 
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data = data,
-                  let resp = try? JSONDecoder().decode(PageList.self, from: data),
-                  resp.code == 0,
-                  let pages = resp.data?.pages
-            else {
+        DLog("cid: 请求 \(url.absoluteString)")
+
+        let config = URLSessionConfiguration.default
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 12
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+
+        session.dataTask(with: req) { data, response, error in
+            if let error = error {
+                let ns = error as NSError
+                DLog("cid: 失败 domain=\(ns.domain) code=\(ns.code) \(error.localizedDescription)")
+                completion(nil)
+                return
+            }
+            if let http = response as? HTTPURLResponse {
+                DLog("cid: HTTP \(http.statusCode)")
+            }
+            guard let data = data else {
+                DLog("cid: 无数据返回")
+                completion(nil)
+                return
+            }
+            DLog("cid: 收到 \(data.count) 字节")
+
+            guard let resp = try? JSONDecoder().decode(PageList.self, from: data) else {
+                let raw = String(data: data.prefix(200), encoding: .utf8) ?? "bin"
+                DLog("cid: JSON 解析失败 \(raw)")
+                completion(nil)
+                return
+            }
+            guard resp.code == 0 else {
+                DLog("cid: 接口返回 code=\(resp.code)")
+                completion(nil)
+                return
+            }
+            guard let pages = resp.data?.pages, !pages.isEmpty else {
+                DLog("cid: pages 为空")
                 completion(nil)
                 return
             }
@@ -71,8 +109,10 @@ enum CidResolver {
             lock.unlock()
 
             if let cid = map[page] {
+                DLog("cid: page=\(page) 共\(pages.count)P -> cid=\(cid)")
                 completion(scheme(bvid: bvid, cid: cid, progress: progress))
             } else {
+                DLog("cid: 找不到 page=\(page)，共\(pages.count)P")
                 completion(nil)
             }
         }.resume()
