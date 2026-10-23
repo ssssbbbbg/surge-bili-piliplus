@@ -22,20 +22,31 @@ private let injectJS = #"""
     return {bv: bv, p: p};
   }
 
-  function toScheme(href){
+  // 解析成原生需要的结构化数据：
+  //   bvid      视频号
+  //   page      分P 序号（第几P，从 1 开始）
+  //   progress  进度毫秒（优先 start_progress）
+  function toPayload(href){
     var d = parse(href);
     if (!d) return null;
-    var out = [];
-    if (d.p.start_progress) out.push('start_progress=' + d.p.start_progress);
-    else if (d.p.t) out.push('t=' + d.p.t);
-    if (d.p.p) out.push('p=' + d.p.p);
-    return 'bilibili://video/' + d.bv + (out.length ? '?' + out.join('&') : '');
+    var out = {bvid: d.bv};
+    if (d.p.p) {
+      var page = parseInt(d.p.p, 10);
+      if (!isNaN(page)) out.page = page;
+    }
+    if (d.p.start_progress) {
+      var ms = parseInt(d.p.start_progress, 10);
+      if (!isNaN(ms)) out.progress = ms;
+    } else if (d.p.t) {
+      var sec = parseFloat(d.p.t);
+      if (!isNaN(sec)) out.progress = Math.round(sec * 1000);
+    }
+    return out;
   }
 
-  function buildBtn(scheme){
+  function buildBtn(scheme, payload){
     var b = document.createElement('button');
     b.type = 'button';
-    b.setAttribute(MARK, scheme);
     b.title = '\u8DF3\u8F6C\u5230 PiliPlus';
     b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
       + 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
@@ -50,7 +61,8 @@ private let injectJS = #"""
     b.addEventListener('click', function(e){
       e.preventDefault();
       e.stopPropagation();
-      window.webkit.messageHandlers.biliJump.postMessage(scheme);
+      // 交给原生：原生会把分P换成 cid，再唤起 PiliPlus
+      window.webkit.messageHandlers.biliJump.postMessage(payload);
       b.style.background = '#2ecc71';
       setTimeout(function(){ b.style.background = '#FB7299'; }, 900);
     });
@@ -65,10 +77,10 @@ private let injectJS = #"""
     // 已有旧的复制按钮就清掉
     li.querySelectorAll('.dgy-bili-wrap').forEach(function(n){ n.remove(); });
 
-    var scheme = toScheme(a.getAttribute('href'));
-    if (!scheme) return;
+    var payload = toPayload(a.getAttribute('href'));
+    if (!payload) return;
 
-    var btn = buildBtn(scheme);
+    var btn = buildBtn(null, payload);
 
     // 定位：主 a 里的最后一个 svg 就是 ↗ 箭头（实际没有 class，不能靠 class 选）
     var svgs = a.querySelectorAll(':scope > svg');
@@ -126,11 +138,28 @@ final class BiliBridge: NSObject, WKScriptMessageHandler {
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage) {
         guard message.name == "biliJump",
-              let scheme = message.body as? String,
-              let url = URL(string: scheme) else { return }
-        DispatchQueue.main.async {
-            UIApplication.shared.open(url, options: [:]) { ok in
-                NSLog("[DGYShell] open %@ -> %@", scheme, ok ? "ok" : "fail")
+              let body = message.body as? [String: Any],
+              let bvid = body["bvid"] as? String else { return }
+
+        let page = body["page"] as? Int
+        let progress = body["progress"] as? Int
+
+        // PiliPlus 的 bilibili:// 入口会丢 p 参数（源码 bug），
+        // 所以这里先把分P换成 cid，走带 cid 的入口。
+        CidResolver.resolve(bvid: bvid, page: page, progress: progress) { scheme in
+            let final = scheme ?? {
+                // 解析失败：退回原样，至少能打开第一P
+                var qs: [String] = []
+                if let progress = progress { qs.append("start_progress=\(progress)") }
+                if let page = page { qs.append("p=\(page)") }
+                return "bilibili://video/\(bvid)" + (qs.isEmpty ? "" : "?" + qs.joined(separator: "&"))
+            }()
+
+            guard let url = URL(string: final) else { return }
+            DispatchQueue.main.async {
+                UIApplication.shared.open(url, options: [:]) { ok in
+                    NSLog("[DGYShell] open %@ -> %@", final, ok ? "ok" : "fail")
+                }
             }
         }
     }
