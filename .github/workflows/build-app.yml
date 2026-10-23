@@ -14,14 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
+      - name: Show toolchain
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
 
+      - name: Clean previous build output
+        run: rm -rf app/build out
+
       - name: Build (unsigned)
         run: |
-          set -e
+          set -euo pipefail
           cd app
           xcodebuild \
             -project DGYShell.xcodeproj \
@@ -34,25 +37,47 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=NO \
-            build \
-            | xcpretty || xcodebuild -project DGYShell.xcodeproj -scheme DGYShell -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" ARCHS=arm64 build
+            build
+
+      - name: Verify binary exists
+        run: |
+          set -euo pipefail
+          APP=$(find app/build -name "DGYShell.app" -type d -maxdepth 6 | head -1)
+          echo "APP=$APP"
+          if [ -z "$APP" ]; then
+            echo "::error::DGYShell.app not found"
+            exit 1
+          fi
+          ls -la "$APP"
+          if [ ! -f "$APP/DGYShell" ]; then
+            echo "::error::executable DGYShell missing"
+            exit 1
+          fi
+          file "$APP/DGYShell"
 
       - name: Package IPA
         run: |
-          set -e
-          APP=$(find app/build -name "DGYShell.app" -maxdepth 6 | head -1)
-          echo "APP=$APP"
-          ls -la "$APP"
-          mkdir -p out/Payload
+          set -euo pipefail
+          APP=$(find app/build -name "DGYShell.app" -type d -maxdepth 6 | head -1)
+          rm -rf out && mkdir -p out/Payload
           cp -R "$APP" out/Payload/
-          # 清掉签名残留
           rm -rf out/Payload/DGYShell.app/_CodeSignature || true
           cd out
           zip -qry DGYShell-unsigned.ipa Payload
           ls -lh DGYShell-unsigned.ipa
+
+      - name: Verify IPA contents
+        run: |
+          set -euo pipefail
+          unzip -l out/DGYShell-unsigned.ipa | tee /tmp/ipa.txt
+          grep -q "Payload/DGYShell.app/DGYShell" /tmp/ipa.txt || {
+            echo "::error::IPA missing executable"
+            exit 1
+          }
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: DGYShell-unsigned-ipa
           path: out/DGYShell-unsigned.ipa
+          if-no-files-found: error
