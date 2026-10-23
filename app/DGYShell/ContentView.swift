@@ -272,6 +272,5 @@ struct ContentView: View {
             .padding(.bottom, 34)
         }
         .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
     }
 }
