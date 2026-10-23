@@ -138,6 +138,18 @@ struct WebShell: UIViewRepresentable {
         ucc.addUserScript(WKUserScript(source: injectJS,
                                        injectionTime: .atDocumentEnd,
                                        forMainFrameOnly: true))
+        // 兜底：页面自带 viewport 导致左右留白/缩放时强制铺满
+        let vpJS = """
+        (function(){
+          var m = document.querySelector('meta[name=viewport]');
+          if (!m) { m = document.createElement('meta'); m.setAttribute('name','viewport'); document.head.appendChild(m); }
+          m.setAttribute('content','width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover');
+          document.documentElement.style.overflowX='hidden';
+        })();
+        """
+        ucc.addUserScript(WKUserScript(source: vpJS,
+                                       injectionTime: .atDocumentStart,
+                                       forMainFrameOnly: true))
 
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = context.coordinator
@@ -146,6 +158,8 @@ struct WebShell: UIViewRepresentable {
 
         // 全屏：忽略安全区、贴边
         web.scrollView.contentInsetAdjustmentBehavior = .never
+        web.scrollView.contentInset = .zero
+        web.scrollView.scrollIndicatorInsets = .zero
         web.scrollView.bounces = true
         web.isOpaque = true
         web.backgroundColor = .systemBackground
@@ -197,9 +211,15 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            WebShell(homeURL: homeURL)
-                .id(reloadToken)
-                .ignoresSafeArea(.all, edges: [.top, .bottom])
+            GeometryReader { geo in
+                WebShell(homeURL: homeURL)
+                    .id(reloadToken)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .ignoresSafeArea(.all, edges: .all)
+            }
+            .ignoresSafeArea(.all, edges: .all)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
 
             Button {
                 reloadToken = UUID()
@@ -214,7 +234,10 @@ struct ContentView: View {
             }
             .padding(.trailing, 14)
             .padding(.bottom, 18)
+            .ignoresSafeArea(.all, edges: .bottom)
         }
+        .ignoresSafeArea(.all, edges: .all)
+        .persistentSystemOverlays(.hidden)
         .statusBarHidden(false)
     }
 }
