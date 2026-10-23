@@ -3,8 +3,10 @@ import os.log
 
 /// 轻量日志：同时写 NSLog、系统日志、以及沙盒内的 dgyshell.log
 /// 自签安装连不上 Xcode 时，可以在 App 内「日志」面板查看。
-enum DLogStore {
+final class DLogStore {
     static let shared = DLogStore()
+
+    private init() {}
 
     private let lock = NSLock()
     private var lines: [String] = []
