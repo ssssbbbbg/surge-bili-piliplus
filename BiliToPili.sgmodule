@@ -1,0 +1,9 @@
+#!name=BiliToPili
+#!desc=bilibili 网页链接立即唤起 PiliPlus
+#!system=ios
+
+[Script]
+bili_to_piliplus = type=http-request, pattern=^https:\/\/(?:www|m)\.bilibili\.com\/video\/BV[0-9A-Za-z]{10}(\/)?(\?.*)?$, requires-body=0, max-size=0, script-path=https://raw.githubusercontent.com/ssssbbbbg/surge-bili-piliplus/main/bili_fast.js, timeout=10
+
+[MITM]
+hostname = %APPEND% www.bilibili.com, m.bilibili.com
