@@ -44,10 +44,60 @@ private let injectJS = #"""
     return out;
   }
 
+  // ---- cid 预取缓存 ----
+  // 弹窗渲染时就查好 pagelist，点跳转直接查表，不再等网络
+  var cidCache = {};      // bvid -> {page: cid}
+  var cidPending = {};    // bvid -> true（请求进行中）
+  var cidFailed = {};     // bvid -> true（已失败，别重复请求）
+
+  function prefetch(bvid){
+    if (!bvid) return;
+    if (cidCache[bvid] || cidPending[bvid] || cidFailed[bvid]) return;
+    cidPending[bvid] = true;
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'https://api.bilibili.com/x/player/pagelist?bvid=' + bvid, true);
+    xhr.timeout = 6000;
+    xhr.onload = function(){
+      delete cidPending[bvid];
+      try {
+        var r = JSON.parse(xhr.responseText);
+        if (r.code === 0 && r.data && r.data.length) {
+          var map = {};
+          for (var i = 0; i < r.data.length; i++) {
+            map[r.data[i].page] = r.data[i].cid;
+          }
+          cidCache[bvid] = map;
+          // 缓存好了，把对应按钮点亮成「已就绪」
+          markReady(bvid);
+        } else {
+          cidFailed[bvid] = true;
+        }
+      } catch(e) {
+        cidFailed[bvid] = true;
+      }
+    };
+    xhr.onerror = xhr.ontimeout = function(){
+      delete cidPending[bvid];
+      cidFailed[bvid] = true;
+    };
+    try { xhr.send(); } catch(e) { delete cidPending[bvid]; cidFailed[bvid] = true; }
+  }
+
+  function markReady(bvid){
+    var btns = document.querySelectorAll('[' + MARK + ']');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].getAttribute('data-bvid') === bvid) {
+        btns[i].setAttribute('data-ready', '1');
+      }
+    }
+  }
+
   function buildBtn(scheme, payload){
     var b = document.createElement('button');
     b.type = 'button';
     b.setAttribute(MARK, '1');   // ← 关键：打标记，去重就靠它
+    if (payload && payload.bvid) b.setAttribute('data-bvid', payload.bvid);
     b.title = '\u8DF3\u8F6C\u5230 PiliPlus';
     b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
       + 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
@@ -62,47 +112,57 @@ private let injectJS = #"""
     b.addEventListener('click', function(e){
       e.preventDefault();
       e.stopPropagation();
-      // 两路并行：JS 先自己查 cid（成功就带 cid），失败则让原生查
+
+      var bvid = payload.bvid;
+      var map = cidCache[bvid];
+
+      // 命中缓存：直接跳，零等待
+      if (map && payload.page && map[payload.page]) {
+        var direct = {bvid: bvid, cid: map[payload.page], __fromJS: 1};
+        if (payload.progress) direct.progress = payload.progress;
+        window.webkit.messageHandlers.biliJump.postMessage(direct);
+        b.style.background = '#2ecc71';
+        setTimeout(function(){ b.style.background = '#FB7299'; }, 900);
+        return;
+      }
+
+      // 未命中：发起请求，成功再跳
       var sent = false;
       function send(obj){
         if (sent) return;
         sent = true;
         obj.__fromJS = true;
         window.webkit.messageHandlers.biliJump.postMessage(obj);
+        b.style.background = '#2ecc71';
+        setTimeout(function(){ b.style.background = '#FB7299'; }, 900);
       }
 
-      if (payload.page && payload.page > 1) {
-        var api = 'https://api.bilibili.com/x/player/pagelist?bvid=' + payload.bvid;
+      if (payload.page && payload.page > 1 && !cidFailed[bvid]) {
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', api, true);
+        xhr.open('GET', 'https://api.bilibili.com/x/player/pagelist?bvid=' + bvid, true);
         xhr.timeout = 4000;
         xhr.onload = function(){
           try {
             var r = JSON.parse(xhr.responseText);
             if (r.code === 0 && r.data) {
-              for (var i = 0; i < r.data.length; i++) {
-                if (r.data[i].page === payload.page) {
-                  payload.cid = r.data[i].cid;
-                  window.__dgyCidInfo = 'JS拿到cid=' + payload.cid;
-                  send(payload);
-                  return;
-                }
+              var m = {};
+              for (var i = 0; i < r.data.length; i++) m[r.data[i].page] = r.data[i].cid;
+              cidCache[bvid] = m;
+              if (m[payload.page]) {
+                payload.cid = m[payload.page];
+                send(payload);
+                return;
               }
             }
-            window.__dgyCidInfo = 'JS接口code=' + (r && r.code);
-          } catch(e) {
-            window.__dgyCidInfo = 'JS解析失败';
-          }
+          } catch(e) {}
+          cidFailed[bvid] = true;
           send(payload);
         };
-        xhr.onerror = function(){ window.__dgyCidInfo = 'JS请求失败'; send(payload); };
-        xhr.ontimeout = function(){ window.__dgyCidInfo = 'JS超时'; send(payload); };
+        xhr.onerror = xhr.ontimeout = function(){ cidFailed[bvid] = true; send(payload); };
         try { xhr.send(); } catch(e) { send(payload); }
       } else {
         send(payload);
       }
-      b.style.background = '#2ecc71';
-      setTimeout(function(){ b.style.background = '#FB7299'; }, 900);
     });
     return b;
   }
@@ -116,6 +176,9 @@ private let injectJS = #"""
 
     var payload = toPayload(a.getAttribute('href'));
     if (!payload) return;
+
+    // 弹窗渲染时就开始预取 cid，点跳转时零等待
+    prefetch(payload.bvid);
 
     var btn = buildBtn(null, payload);
 
