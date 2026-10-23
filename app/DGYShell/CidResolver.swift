@@ -5,16 +5,15 @@ import Foundation
 /// 但带 cid 的入口会直接进 toVideoPage，不受影响。
 enum CidResolver {
 
+    /// 接口返回：{"code":0,"data":[{"cid":..,"page":..}, ...]}
+    /// 注意 data 是数组，不是对象
     private struct PageList: Decodable {
-        struct DataBox: Decodable {
-            let pages: [Page]?
-        }
         struct Page: Decodable {
             let cid: Int
             let page: Int
         }
         let code: Int
-        let data: DataBox?
+        let data: [Page]?
     }
 
     /// 同步取消用：按 bvid 缓存所有分P，避免重复请求
@@ -95,7 +94,7 @@ enum CidResolver {
                 completion(nil)
                 return
             }
-            guard let pages = resp.data?.pages, !pages.isEmpty else {
+            guard let pages = resp.data, !pages.isEmpty else {
                 DLog("cid: pages 为空")
                 completion(nil)
                 return
