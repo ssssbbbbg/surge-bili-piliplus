@@ -138,6 +138,18 @@ struct WebShell: UIViewRepresentable {
         ucc.addUserScript(WKUserScript(source: injectJS,
                                        injectionTime: .atDocumentEnd,
                                        forMainFrameOnly: true))
+        // 兜底：页面自带 viewport 导致左右留白/缩放时强制铺满
+        let vpJS = """
+        (function(){
+          var m = document.querySelector('meta[name=viewport]');
+          if (!m) { m = document.createElement('meta'); m.setAttribute('name','viewport'); document.head.appendChild(m); }
+          m.setAttribute('content','width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover');
+          document.documentElement.style.overflowX='hidden';
+        })();
+        """
+        ucc.addUserScript(WKUserScript(source: vpJS,
+                                       injectionTime: .atDocumentStart,
+                                       forMainFrameOnly: true))
 
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = context.coordinator
@@ -149,19 +161,6 @@ struct WebShell: UIViewRepresentable {
         web.scrollView.contentInset = .zero
         web.scrollView.scrollIndicatorInsets = .zero
         web.scrollView.bounces = true
-        // 有些页面自己写了 viewport meta 导致左右留白/缩放，这里兜底铺满
-        let vp = """
-        (function(){
-          var m = document.querySelector('meta[name=viewport]');
-          if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
-          m.setAttribute('content','width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover');
-          document.documentElement.style.width='100%';
-          document.documentElement.style.overflowX='hidden';
-        })();
-        """
-        ucc.addUserScript(WKUserScript(source: vp,
-                                       injectionTime: .atDocumentStart,
-                                       forMainFrameOnly: true))
         web.isOpaque = true
         web.backgroundColor = .systemBackground
         web.scrollView.backgroundColor = .systemBackground
@@ -240,6 +239,5 @@ struct ContentView: View {
         .ignoresSafeArea(.all, edges: .all)
         .persistentSystemOverlays(.hidden)
         .statusBarHidden(false)
-        .preferredColorScheme(.light)
     }
 }
