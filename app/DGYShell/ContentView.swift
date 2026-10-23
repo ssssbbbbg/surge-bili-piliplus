@@ -47,6 +47,7 @@ private let injectJS = #"""
   function buildBtn(scheme, payload){
     var b = document.createElement('button');
     b.type = 'button';
+    b.setAttribute(MARK, '1');   // ← 关键：打标记，去重就靠它
     b.title = '\u8DF3\u8F6C\u5230 PiliPlus';
     b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
       + 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
@@ -61,8 +62,45 @@ private let injectJS = #"""
     b.addEventListener('click', function(e){
       e.preventDefault();
       e.stopPropagation();
-      // 交给原生：原生会把分P换成 cid，再唤起 PiliPlus
-      window.webkit.messageHandlers.biliJump.postMessage(payload);
+      // 两路并行：JS 先自己查 cid（成功就带 cid），失败则让原生查
+      var sent = false;
+      function send(obj){
+        if (sent) return;
+        sent = true;
+        obj.__fromJS = true;
+        window.webkit.messageHandlers.biliJump.postMessage(obj);
+      }
+
+      if (payload.page && payload.page > 1) {
+        var api = 'https://api.bilibili.com/x/player/pagelist?bvid=' + payload.bvid;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', api, true);
+        xhr.timeout = 4000;
+        xhr.onload = function(){
+          try {
+            var r = JSON.parse(xhr.responseText);
+            if (r.code === 0 && r.data) {
+              for (var i = 0; i < r.data.length; i++) {
+                if (r.data[i].page === payload.page) {
+                  payload.cid = r.data[i].cid;
+                  window.__dgyCidInfo = 'JS拿到cid=' + payload.cid;
+                  send(payload);
+                  return;
+                }
+              }
+            }
+            window.__dgyCidInfo = 'JS接口code=' + (r && r.code);
+          } catch(e) {
+            window.__dgyCidInfo = 'JS解析失败';
+          }
+          send(payload);
+        };
+        xhr.onerror = function(){ window.__dgyCidInfo = 'JS请求失败'; send(payload); };
+        xhr.ontimeout = function(){ window.__dgyCidInfo = 'JS超时'; send(payload); };
+        try { xhr.send(); } catch(e) { send(payload); }
+      } else {
+        send(payload);
+      }
       b.style.background = '#2ecc71';
       setTimeout(function(){ b.style.background = '#FB7299'; }, 900);
     });
@@ -73,13 +111,7 @@ private let injectJS = #"""
     var a = li.querySelector('a[href*="/video/BV"]');
     if (!a) return;
 
-    // 已有旧的复制按钮就清掉
-    li.querySelectorAll('.dgy-bili-wrap').forEach(function(n){ n.remove(); });
-
-    // 去重：这个 li 里已经有跳转钮就直接返回
-    if (li.querySelector('[' + MARK + ']')) return;
-
-    // 同一个 a 里也不该有两个
+    // 已经插过就跳过（按钮自带 MARK）
     if (a.querySelector('[' + MARK + ']')) return;
 
     var payload = toPayload(a.getAttribute('href'));
@@ -113,17 +145,6 @@ private let injectJS = #"""
   }
 
   function scan(){
-    // 全局去重：同一个链接出现多个跳转钮时只留第一个
-    var seen = {};
-    var marks = document.querySelectorAll('[' + MARK + ']');
-    for (var k = 0; k < marks.length; k++) {
-      var b = marks[k];
-      var host = b.closest('a') || b.closest('li');
-      if (!host) { b.remove(); continue; }
-      if (seen[host]) { b.remove(); continue; }
-      seen[host] = true;
-    }
-
     var as = document.querySelectorAll('a[href*="/video/BV"]');
     for (var i = 0; i < as.length; i++) {
       var li = as[i].closest('li');
@@ -172,9 +193,24 @@ final class BiliBridge: NSObject, WKScriptMessageHandler {
         DLog("收到跳转: bvid=\(bvid) page=\(page.map(String.init) ?? "nil") progress=\(progress.map(String.init) ?? "nil")")
         DLog("原始 body: \(body)")
 
+        // JS 侧已拿到 cid 就直接用，跳过原生请求
+        if let cid = (body["cid"] as? NSNumber)?.intValue {
+            var qs = ["cid=\(cid)"]
+            if let progress = progress { qs.append("start_progress=\(progress)") }
+            let final = "bilibili://video/\(bvid)?" + qs.joined(separator: "&")
+            DLog("JS 已给 cid=\(cid)，直接跳: \(final)")
+            guard let url = URL(string: final) else { return }
+            DispatchQueue.main.async {
+                UIApplication.shared.open(url, options: [:]) { ok in
+                    DLog("openURL 结果: \(ok ? "成功" : "失败")")
+                }
+            }
+            return
+        }
+
         // PiliPlus 的 bilibili:// 入口会丢 p 参数（源码 bug），
         // 所以这里先把分P换成 cid，走带 cid 的入口。
-        DLog("开始解析 cid ...")
+        DLog("JS 没给 cid，原生开始解析 ...")
         CidResolver.resolve(bvid: bvid, page: page, progress: progress) { scheme in
             let final = scheme ?? {
                 DLog("cid 解析失败，回退到原 scheme")
