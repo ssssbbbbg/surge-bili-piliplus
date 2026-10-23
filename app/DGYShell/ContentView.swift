@@ -2,13 +2,13 @@ import SwiftUI
 import WebKit
 
 // MARK: - 注入脚本
+// 把弹窗里每条视频右侧的 ↗ 箭头替换成「跳转」按钮，点击直接唤起 PiliPlus
 private let injectJS = #"""
 (function(){
   if (window.__dgyInstalled) return;
   window.__dgyInstalled = true;
 
-  var WRAP = 'dgy-bili-wrap';
-  var BTN  = 'dgy-bili-copy';
+  var MARK = 'data-dgy-jump';
 
   function parse(href){
     var m = href.match(/\/video\/(BV[0-9A-Za-z]{10})\/?(\?[^#]*)?/);
@@ -32,96 +32,68 @@ private let injectJS = #"""
     return 'bilibili://video/' + d.bv + (out.length ? '?' + out.join('&') : '');
   }
 
-  function toWebUrl(href){
-    var d = parse(href);
-    if (!d) return null;
-    var out = [];
-    if (d.p.t) out.push('t=' + d.p.t);
-    if (d.p.p) out.push('p=' + d.p.p);
-    if (d.p.start_progress) out.push('start_progress=' + d.p.start_progress);
-    return 'https://www.bilibili.com/video/' + d.bv + '/' + (out.length ? '?' + out.join('&') : '');
-  }
-
-  function mkBtn(label, bg, color, border, onClick){
+  function buildBtn(scheme){
     var b = document.createElement('button');
     b.type = 'button';
-    b.textContent = label;
-    b.style.cssText = 'flex:0 0 auto;background:' + bg + ';color:' + color + ';'
-      + 'border:' + (border ? '1px solid ' + color : 'none') + ';'
-      + 'border-radius:8px;padding:9px 14px;font-size:13px;font-weight:600;'
-      + 'line-height:1.2;cursor:pointer;font-family:-apple-system,sans-serif;'
-      + 'white-space:nowrap;';
+    b.setAttribute(MARK, scheme);
+    b.title = '\u8DF3\u8F6C\u5230 PiliPlus';
+    b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
+      + 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
+      + 'stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M7 17 L17 7"/><path d="M9 7 L17 7 L17 15"/></svg>';
+    b.style.cssText =
+      'display:flex;align-items:center;justify-content:center;' +
+      'width:34px;height:34px;padding:0;border:none;border-radius:9px;' +
+      'background:#FB7299;color:#fff;cursor:pointer;' +
+      'box-shadow:0 2px 8px rgba(251,114,153,.35);' +
+      '-webkit-tap-highlight-color:transparent;flex:0 0 auto;';
     b.addEventListener('click', function(e){
-      e.preventDefault(); e.stopPropagation(); onClick(b);
+      e.preventDefault();
+      e.stopPropagation();
+      window.webkit.messageHandlers.biliJump.postMessage(scheme);
+      b.style.background = '#2ecc71';
+      setTimeout(function(){ b.style.background = '#FB7299'; }, 900);
     });
     return b;
   }
 
-  function resetBtn(b, label, bg){
-    b.textContent = label;
-    b.style.background = bg;
-  }
-
   function decorate(li){
-    if (li.dataset.dgyDone === '1') return;
     var a = li.querySelector('a[href*="/video/BV"]');
     if (!a) return;
+    if (li.querySelector('[' + MARK + ']')) return;
+
+    // 已有旧的复制按钮就清掉
+    li.querySelectorAll('.dgy-bili-wrap').forEach(function(n){ n.remove(); });
 
     var scheme = toScheme(a.getAttribute('href'));
-    var webUrl = toWebUrl(a.getAttribute('href'));
     if (!scheme) return;
 
-    li.querySelectorAll('.' + WRAP).forEach(function(n){ n.remove(); });
-    li.dataset.dgyDone = '1';
+    var btn = buildBtn(scheme);
 
-    var wrap = document.createElement('div');
-    wrap.className = WRAP;
-    wrap.style.cssText = 'display:flex;flex-direction:row;flex-wrap:wrap;'
-      + 'gap:8px;width:100%;margin:10px 0 4px;align-items:center;';
+    // 定位：主 a 里的最后一个 svg 就是 ↗ 箭头（实际没有 class，不能靠 class 选）
+    var svgs = a.querySelectorAll(':scope > svg');
+    var arrow = null;
+    for (var i = svgs.length - 1; i >= 0; i--) {
+      if ((svgs[i].getAttribute('class') || '').indexOf('brand-bilibili') < 0) {
+        arrow = svgs[i];
+        break;
+      }
+    }
+    if (arrow) {
+      arrow.replaceWith(btn);
+      return;
+    }
 
-    // 主按钮：复制 + 跳转
-    var main = mkBtn('\uD83D\uDCCB \u590D\u5236 + \u8DF3\u8F6C', '#FB7299', '#fff', false, function(b){
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText && webUrl) {
-          navigator.clipboard.writeText(webUrl);
-        }
-      } catch (e) {}
-      window.webkit.messageHandlers.biliJump.postMessage(scheme);
-      b.textContent = '\u2713 \u5DF2\u8DF3\u8F6C';
-      b.style.background = '#2ecc71';
-      setTimeout(function(){ resetBtn(b, '\uD83D\uDCCB \u590D\u5236 + \u8DF3\u8F6C', '#FB7299'); }, 1800);
-    });
-
-    // 次按钮：只复制
-    var only = mkBtn('\u53EA\u590D\u5236', '#fff', '#FB7299', true, function(b){
-      var done = function(){
-        b.textContent = '\u2713';
-        setTimeout(function(){ b.textContent = '\u53EA\u590D\u5236'; }, 1500);
-      };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText && webUrl) {
-          navigator.clipboard.writeText(webUrl).then(done).catch(function(){
-            window.webkit.messageHandlers.biliCopy.postMessage(webUrl);
-            done();
-          });
-          return;
-        }
-      } catch (err) {}
-      if (webUrl) window.webkit.messageHandlers.biliCopy.postMessage(webUrl);
-      done();
-    });
-
-    wrap.appendChild(main);
-    wrap.appendChild(only);
-    li.appendChild(wrap);
+    // 兜底：绝对定位到 li 右上角
+    var cs = getComputedStyle(li);
+    if (cs.position === 'static') li.style.position = 'relative';
+    btn.style.position = 'absolute';
+    btn.style.top = '10px';
+    btn.style.right = '12px';
+    li.appendChild(btn);
   }
 
   function scan(){
-    // 清孤儿
-    document.querySelectorAll('.' + WRAP).forEach(function(w){
-      var li = w.closest('li');
-      if (!li || !li.querySelector('a[href*="/video/BV"]')) w.remove();
-    });
     var as = document.querySelectorAll('a[href*="/video/BV"]');
     for (var i = 0; i < as.length; i++) {
       var li = as[i].closest('li');
@@ -132,7 +104,7 @@ private let injectJS = #"""
   var timer = null;
   function schedule(){
     if (timer) return;
-    timer = setTimeout(function(){ timer = null; scan(); }, 200);
+    timer = setTimeout(function(){ timer = null; scan(); }, 180);
   }
 
   new MutationObserver(schedule).observe(document.documentElement, {
@@ -153,22 +125,13 @@ final class BiliBridge: NSObject, WKScriptMessageHandler {
 
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        switch message.name {
-        case "biliJump":
-            guard let scheme = message.body as? String,
-                  let url = URL(string: scheme) else { return }
-            DispatchQueue.main.async {
-                UIApplication.shared.open(url, options: [:]) { ok in
-                    NSLog("[DGYShell] open %@ -> %@", scheme, ok ? "ok" : "fail")
-                }
+        guard message.name == "biliJump",
+              let scheme = message.body as? String,
+              let url = URL(string: scheme) else { return }
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { ok in
+                NSLog("[DGYShell] open %@ -> %@", scheme, ok ? "ok" : "fail")
             }
-        case "biliCopy":
-            guard let text = message.body as? String else { return }
-            DispatchQueue.main.async {
-                UIPasteboard.general.string = text
-            }
-        default:
-            break
         }
     }
 }
@@ -186,7 +149,6 @@ struct WebShell: UIViewRepresentable {
 
         let ucc = cfg.userContentController
         ucc.add(BiliBridge.shared, name: "biliJump")
-        ucc.add(BiliBridge.shared, name: "biliCopy")
         ucc.addUserScript(WKUserScript(source: injectJS,
                                        injectionTime: .atDocumentEnd,
                                        forMainFrameOnly: true))
@@ -198,7 +160,6 @@ struct WebShell: UIViewRepresentable {
         web.isOpaque = true
         web.backgroundColor = .systemBackground
 
-        // 全屏关键三项
         web.scrollView.contentInsetAdjustmentBehavior = .never
         web.scrollView.contentInset = .zero
         web.scrollView.scrollIndicatorInsets = .zero
