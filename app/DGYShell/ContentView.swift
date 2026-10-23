@@ -72,23 +72,30 @@ private let injectJS = #"""
   function decorate(li){
     var a = li.querySelector('a[href*="/video/BV"]');
     if (!a) return;
-    if (li.querySelector('[' + MARK + ']')) return;
 
     // 已有旧的复制按钮就清掉
     li.querySelectorAll('.dgy-bili-wrap').forEach(function(n){ n.remove(); });
+
+    // 去重：这个 li 里已经有跳转钮就直接返回
+    if (li.querySelector('[' + MARK + ']')) return;
+
+    // 同一个 a 里也不该有两个
+    if (a.querySelector('[' + MARK + ']')) return;
 
     var payload = toPayload(a.getAttribute('href'));
     if (!payload) return;
 
     var btn = buildBtn(null, payload);
 
-    // 定位：主 a 里的最后一个 svg 就是 ↗ 箭头（实际没有 class，不能靠 class 选）
-    var svgs = a.querySelectorAll(':scope > svg');
-    var arrow = null;
-    for (var i = svgs.length - 1; i >= 0; i--) {
-      if ((svgs[i].getAttribute('class') || '').indexOf('brand-bilibili') < 0) {
-        arrow = svgs[i];
-        break;
+    // 定位：主 a 里的 ↗ 箭头（class = svg.tabler-icon-arrow-up-right）
+    // 用 getAttribute 读 class —— svg 的 className 是 SVGAnimatedString，直接取会得到对象
+    var arrow = a.querySelector('svg.tabler-icon-arrow-up-right');
+    if (!arrow) {
+      // 兜底：取 a 内最后一个非 bilibili 图标的 svg
+      var svgs = a.querySelectorAll('svg');
+      for (var i = svgs.length - 1; i >= 0; i--) {
+        var cls = svgs[i].getAttribute('class') || '';
+        if (cls.indexOf('brand-bilibili') < 0) { arrow = svgs[i]; break; }
       }
     }
     if (arrow) {
@@ -106,6 +113,17 @@ private let injectJS = #"""
   }
 
   function scan(){
+    // 全局去重：同一个链接出现多个跳转钮时只留第一个
+    var seen = {};
+    var marks = document.querySelectorAll('[' + MARK + ']');
+    for (var k = 0; k < marks.length; k++) {
+      var b = marks[k];
+      var host = b.closest('a') || b.closest('li');
+      if (!host) { b.remove(); continue; }
+      if (seen[host]) { b.remove(); continue; }
+      seen[host] = true;
+    }
+
     var as = document.querySelectorAll('a[href*="/video/BV"]');
     for (var i = 0; i < as.length; i++) {
       var li = as[i].closest('li');
@@ -137,34 +155,48 @@ final class BiliBridge: NSObject, WKScriptMessageHandler {
 
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        guard message.name == "biliJump",
-              let body = message.body as? [String: Any],
-              let bvid = body["bvid"] as? String else { return }
+        guard message.name == "biliJump" else { return }
+        guard let body = message.body as? [String: Any] else {
+            NSLog("[DGYShell] bad body: %@", String(describing: message.body))
+            return
+        }
+        guard let bvid = body["bvid"] as? String else {
+            NSLog("[DGYShell] missing bvid: %@", String(describing: body))
+            return
+        }
 
-        let page = body["page"] as? Int
-        let progress = body["progress"] as? Int
+        // JS 数字桥接成 NSNumber，as? Int 不可靠，统一走 NSNumber
+        let page: Int? = (body["page"] as? NSNumber)?.intValue
+        let progress: Int? = (body["progress"] as? NSNumber)?.intValue
+
+        DLog("收到跳转: bvid=\(bvid) page=\(page.map(String.init) ?? "nil") progress=\(progress.map(String.init) ?? "nil")")
+        DLog("原始 body: \(body)")
 
         // PiliPlus 的 bilibili:// 入口会丢 p 参数（源码 bug），
         // 所以这里先把分P换成 cid，走带 cid 的入口。
+        DLog("开始解析 cid ...")
         CidResolver.resolve(bvid: bvid, page: page, progress: progress) { scheme in
             let final = scheme ?? {
-                // 解析失败：退回原样，至少能打开第一P
+                DLog("cid 解析失败，回退到原 scheme")
                 var qs: [String] = []
                 if let progress = progress { qs.append("start_progress=\(progress)") }
                 if let page = page { qs.append("p=\(page)") }
                 return "bilibili://video/\(bvid)" + (qs.isEmpty ? "" : "?" + qs.joined(separator: "&"))
             }()
 
-            guard let url = URL(string: final) else { return }
+            DLog("最终 scheme: \(final)")
+            guard let url = URL(string: final) else {
+                DLog("URL 构造失败")
+                return
+            }
             DispatchQueue.main.async {
                 UIApplication.shared.open(url, options: [:]) { ok in
-                    NSLog("[DGYShell] open %@ -> %@", final, ok ? "ok" : "fail")
+                    DLog("openURL 结果: \(ok ? "成功" : "失败")")
                 }
             }
         }
     }
 }
-
 // MARK: - WebView 容器（全屏）
 struct WebShell: UIViewRepresentable {
     let homeURL: URL
@@ -239,6 +271,7 @@ struct WebShell: UIViewRepresentable {
 // MARK: - 主界面（全屏）
 struct ContentView: View {
     @State private var reloadToken = UUID()
+    @State private var showLog = false
     private let homeURL = URL(string: "https://www.cxyonly.fans/")!
 
     var body: some View {
@@ -247,20 +280,88 @@ struct ContentView: View {
                 .id(reloadToken)
                 .edgesIgnoringSafeArea(.all)
 
-            Button {
-                reloadToken = UUID()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(Color(red: 0.98, green: 0.45, blue: 0.60).opacity(0.92))
-                    .clipShape(Circle())
-                    .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+            VStack(alignment: .trailing, spacing: 12) {
+                Button {
+                    showLog = true
+                } label: {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 42)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+                }
+
+                Button {
+                    reloadToken = UUID()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 42)
+                        .background(Color(red: 0.98, green: 0.45, blue: 0.60).opacity(0.92))
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+                }
             }
             .padding(.trailing, 14)
             .padding(.bottom, 34)
         }
         .statusBarHidden(true)
+        .sheet(isPresented: $showLog) {
+            LogView()
+        }
+    }
+}
+
+// MARK: - 日志面板
+struct LogView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var lines: [String] = []
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    Text("跳转链路日志。点了没反应就看这里。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    if lines.isEmpty {
+                        Text("暂无日志").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("日志")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("清空") {
+                        DLogStore.shared.clear()
+                        lines = []
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("刷新") {
+                        lines = DLogStore.shared.snapshot()
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .onAppear {
+                DLogStore.shared.loadFromFile()
+                lines = DLogStore.shared.snapshot()
+            }
+        }
     }
 }
