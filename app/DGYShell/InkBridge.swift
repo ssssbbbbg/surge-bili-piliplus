@@ -53,8 +53,43 @@ let inkBootstrapJS = #"""
     });
   }
 
+  // 版面改造：作答三键挪到右上角，翻页挪到左下角，顶部翻页隐藏
+  var LAYOUT_CSS = [
+    'div[class*="_answerActions_"]{',
+    '  position:fixed !important; top:2px !important; right:84px !important;',
+    '  bottom:auto !important; left:auto !important; width:auto !important;',
+    '  height:auto !important; padding:0 !important; margin:0 !important;',
+    '  background:transparent !important; border:none !important;',
+    '  z-index:60 !important; display:flex !important;',
+    '  align-items:center !important; gap:8px !important;',
+    '}',
+    'div[class*="_answerActions_"] button{',
+    '  height:34px !important; padding:0 14px !important;',
+    '  font-size:14px !important; border-radius:17px !important;',
+    '  background:#fff !important; border:1px solid rgba(0,0,0,0.10) !important;',
+    '}',
+    'nav[class*="_focusHeaderNavigation"]{display:none !important;}',
+    'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"]{',
+    '  display:flex !important; position:absolute !important;',
+    '  left:150px !important; bottom:5px !important;',
+    '  flex:0 0 auto !important; align-items:center; gap:10px; z-index:30;',
+    '}'
+  ].join('\n');
+
+  function applyLayout() {
+    var tag = document.getElementById('__ink_layout');
+    if (!tag) {
+      tag = document.createElement('style');
+      tag.id = '__ink_layout';
+      (document.head || document.documentElement).appendChild(tag);
+    }
+    if (tag.textContent !== LAYOUT_CSS) tag.textContent = LAYOUT_CSS;
+  }
+  window.__inkLayout = applyLayout;
+
   function measure() {
     hideNative();
+    applyLayout();
     var box = answerBox();
     var q = qnum();
     var payload = { box: box, q: q, path: location.pathname, host: location.host,
@@ -77,7 +112,11 @@ let inkBootstrapJS = #"""
     });
   }
 
-  var mo = new MutationObserver(schedule);
+  var mo = new MutationObserver(function () {
+    // 样式被清掉就立刻补回来，不等轮询
+    if (!document.getElementById('__ink_layout')) applyLayout();
+    schedule();
+  });
   mo.observe(document.documentElement, {
     childList: true, subtree: true, characterData: true, attributes: true,
     attributeFilter: ['class', 'style']
@@ -86,8 +125,12 @@ let inkBootstrapJS = #"""
   window.addEventListener('orientationchange', schedule);
   window.addEventListener('scroll', schedule, true);
 
-  // 轮询兜底：路由切换不会触发统一的 DOM 事件
+  // 轮询兜底：路由切换不会触发统一的 DOM 事件，
+  // 同时守住样式标签——网站重渲染可能把 <style> 一并清掉
   setInterval(function () {
+    if (!document.getElementById('__ink_layout')) {
+      applyLayout();
+    }
     var q = qnum();
     if (q !== lastQ) schedule();
   }, 700);
