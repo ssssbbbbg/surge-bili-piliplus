@@ -1,5 +1,6 @@
 import SwiftUI
 import PencilKit
+import QuartzCore
 
 // MARK: - PencilKit 画布
 // 覆盖在网页作答区上方。原生笔迹：压感、倾斜、平滑、防误触都是系统级。
@@ -46,12 +47,21 @@ struct InkCanvasView: UIViewRepresentable {
         context.coordinator.pinch = pinch
 
         // Pencil Pro 轻捏 / 轻点两下：UIPencilInteraction 是唯一的官方入口。
-        // 用户的偏好（切橡皮 / 切上一个工具 / 调色盘）在系统设置里，
-        // 这里读 preferredSqueezeAction，照它的意图执行。
+        // 挂到 window 上而不是 canvas —— 笔没落在画布上时也能收到轻捏。
+        // 注意必须保持强引用，否则 interaction 会被释放，回调再也不来。
         let pencil = UIPencilInteraction()
         pencil.delegate = context.coordinator
         pencil.isEnabled = true
-        canvas.addInteraction(pencil)
+        context.coordinator.squeezeInteraction = pencil
+
+        // 优先挂 window；还没进窗口就先挂 canvas，等 didMoveToWindow 再搬
+        if let window = canvas.window {
+            window.addInteraction(pencil)
+            context.coordinator.pencilAttachedTo = .window
+        } else {
+            canvas.addInteraction(pencil)
+            context.coordinator.pencilAttachedTo = .canvas
+        }
 
         context.coordinator.startToolPolling(canvas)
 
@@ -59,6 +69,16 @@ struct InkCanvasView: UIViewRepresentable {
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
+        // 画布进窗口后，把轻捏交互从 canvas 搬到 window，
+        // 这样笔没落在画布上也能收到。
+        if context.coordinator.pencilAttachedTo == .canvas,
+           let window = canvas.window,
+           let p = context.coordinator.squeezeInteraction {
+            canvas.removeInteraction(p)
+            window.addInteraction(p)
+            context.coordinator.pencilAttachedTo = .window
+        }
+
         context.coordinator.applyToolIfNeeded(canvas, tool: tool)
 
         if canvas.drawing.dataRepresentation() != drawing.dataRepresentation() {
@@ -74,6 +94,13 @@ struct InkCanvasView: UIViewRepresentable {
         private var lastToolSignature: String = ""
         weak var pinch: UIPinchGestureRecognizer?
         private var pinchFired = false
+        private var squeezeHandled = false
+        /// 强引用，防止 interaction 被释放
+        var squeezeInteraction: UIPencilInteraction?
+        enum PencilHost { case none, canvas, window }
+        var pencilAttachedTo: PencilHost = .none
+        /// 最近一次工具切换时间，防轻捏+双击双触发
+        private var lastToggleAt: CFTimeInterval = 0
         private var toolPollTimer: Timer?
         /// 上一次见到的画布工具签名，用来判断"谁改了工具"
         private var canvasToolSignature = ""
@@ -143,20 +170,31 @@ struct InkCanvasView: UIViewRepresentable {
         @available(iOS 17.5, *)
         func pencilInteraction(_ interaction: UIPencilInteraction,
                                didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-            guard squeeze.phase == .ended else { return }
+            // 文档：.ended =「连续手势结束，或离散手势被识别」。
+            // 轻捏是离散手势，正常只发一次 .ended；
+            // 但部分系统版本会先发 .began 再发 .ended，
+            // 用 squeezeHandled 防重复，两种情况都能触发。
+            switch squeeze.phase {
+            case .began, .ended:
+                if squeezeHandled { return }
+                squeezeHandled = true
+            case .cancelled:
+                squeezeHandled = false
+                return
+            default:
+                return
+            }
+            // 抬手后复位，下一次轻捏才能再触发
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.squeezeHandled = false
+            }
 
             switch UIPencilInteraction.preferredSqueezeAction {
-            case .switchEraser:
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                parent.onPinchToggleTool()
-            case .switchPrevious:
-                // 切到上一个用过的工具
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                parent.onPinchToggleTool()
+            case .switchEraser, .switchPrevious:
+                fireToggle()
             case .showColorPalette, .showInkAttributes, .showContextualPalette:
-                // 调色盘这类交给系统 / 我们自己的工具条，
-                // 这里只做个提示音，不抢行为
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                // 这些交给系统面板，不抢行为
+                break
             default:
                 break
             }
@@ -170,8 +208,7 @@ struct InkCanvasView: UIViewRepresentable {
                                didReceiveTap tap: UIPencilInteraction.Tap) {
             switch UIPencilInteraction.preferredTapAction {
             case .switchEraser, .switchPrevious:
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                parent.onPinchToggleTool()
+                fireToggle()
             default:
                 break
             }
@@ -182,9 +219,18 @@ struct InkCanvasView: UIViewRepresentable {
         func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
             if #available(iOS 17.5, *) { return }   // 新系统走带 Tap 的那个
             if UIPencilInteraction.preferredTapAction == .switchEraser {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                parent.onPinchToggleTool()
+                fireToggle()
             }
+        }
+
+        /// 所有「切换工具」路径的唯一出口：去抖 250ms，
+        /// 避免轻捏和双击同时被系统上报时切两次。
+        private func fireToggle() {
+            let now = CACurrentMediaTime()
+            guard now - lastToggleAt > 0.25 else { return }
+            lastToggleAt = now
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            parent.onPinchToggleTool()
         }
 
         @objc func handlePinch(_ g: UIPinchGestureRecognizer) {
@@ -195,9 +241,7 @@ struct InkCanvasView: UIViewRepresentable {
                 // 攥到 78% 以下才算数，避免误触
                 if !pinchFired && g.scale < 0.75 {
                     pinchFired = true
-                    // 捏合震动一下，跟系统手感一致
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    parent.onPinchToggleTool()
+                    fireToggle()
                 }
             case .ended, .cancelled, .failed:
                 pinchFired = false

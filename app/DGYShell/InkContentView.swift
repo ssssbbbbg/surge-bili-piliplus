@@ -227,7 +227,8 @@ struct InkContentView: View {
             tool = PKEraserTool(.bitmap, width: 20.0)
         }
         flash(isEraser ? "橡皮" : "笔")
-        showBar()
+        // 不在切换后弹工具栏——会挡住刚写的字。
+        // 用户手动点一下顶部小把手就能叫回来。
     }
 
     // MARK: - 存档

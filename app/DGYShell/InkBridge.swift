@@ -105,9 +105,9 @@ let inkBootstrapJS = #"""
     // 这样不会出现上方的空隙。
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"]{',
     '  display:flex !important; position:absolute !important;',
-    '  left:200px !important; top:50% !important; transform:translateY(-50%) !important;',
+    '  left:250px !important; top:50% !important; transform:translateY(-50%) !important;',
     '  bottom:auto !important; width:auto !important; flex:0 0 auto !important;',
-    '  align-items:center !important; gap:14px !important; z-index:30 !important;',
+    '  align-items:center !important; gap:28px !important; z-index:30 !important;',
     '  background:transparent !important; border:none !important;',
     '}',
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button{',
