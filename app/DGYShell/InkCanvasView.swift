@@ -247,11 +247,7 @@ struct InkToolbar: View {
                 }
                 segment(icon: "eraser", active: isEraser) {
                     isEraser = true
-                    if #available(iOS 16.4, *) {
-                        tool = PKEraserTool(.bitmap, width: 20.0 as CGFloat)
-                    } else {
-                        tool = PKEraserTool(.bitmap)
-                    }
+                    tool = PKEraserTool(.bitmap, width: 20.0)
                 }
             }
             .background(Color.black.opacity(0.06))

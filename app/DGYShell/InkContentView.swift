@@ -205,11 +205,7 @@ struct InkContentView: View {
         if eraser {
             if !isEraser {
                 isEraser = true
-                if #available(iOS 16.4, *) {
-                    tool = PKEraserTool(.bitmap, width: 20.0 as CGFloat)
-                } else {
-                    tool = PKEraserTool(.bitmap)
-                }
+                tool = PKEraserTool(.bitmap, width: 20.0)
                 flash("橡皮")
             }
         } else {
@@ -228,11 +224,7 @@ struct InkContentView: View {
             tool = PKInkingTool(.pen, color: UIColor(penColor), width: penWidth)
         } else {
             isEraser = true
-            if #available(iOS 16.4, *) {
-                tool = PKEraserTool(.bitmap, width: 20.0 as CGFloat)
-            } else {
-                tool = PKEraserTool(.bitmap)
-            }
+            tool = PKEraserTool(.bitmap, width: 20.0)
         }
         flash(isEraser ? "橡皮" : "笔")
         showBar()
