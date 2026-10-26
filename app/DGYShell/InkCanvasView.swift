@@ -53,7 +53,7 @@ struct InkCanvasView: UIViewRepresentable {
         pencil.isEnabled = true
         canvas.addInteraction(pencil)
 
-        context.coordinator.observeTool(canvas)
+        context.coordinator.startToolPolling(canvas)
 
         return canvas
     }
@@ -74,26 +74,34 @@ struct InkCanvasView: UIViewRepresentable {
         private var lastToolSignature: String = ""
         weak var pinch: UIPinchGestureRecognizer?
         private var pinchFired = false
-        private var toolObservation: NSKeyValueObservation?
-        /// 我们自己设 tool 时置位，避免 KVO 又把它当成用户轻捏
-        var isApplyingTool = false
+        private var toolPollTimer: Timer?
+        /// 上一次见到的画布工具签名，用来判断"谁改了工具"
+        private var canvasToolSignature = ""
 
         init(_ parent: InkCanvasView) { self.parent = parent }
 
-        /// 系统轻捏（Pencil Pro）会直接改 canvas.tool，
-        /// 用 KVO 把它同步回 SwiftUI 状态，工具栏高亮才不会脱节
-        func observeTool(_ canvas: PKCanvasView) {
-            toolObservation = canvas.observe(\.tool, options: [.new]) { [weak self] _, change in
-                guard let self, let t = change.newValue else { return }
-                guard !self.isApplyingTool else { return }
-                self.lastToolSignature = self.signature(of: t)
-                if t is PKEraserTool {
+        /// PKCanvasView.tool 不是 KVO 兼容属性（没有 @objc dynamic），
+        /// 用 observe(\.tool) 会直接崩在 _bridgeKeyPathToString。
+        /// 所以改成轻量轮询：每 0.15 秒比一次签名，变了就说明系统动了工具。
+        func startToolPolling(_ canvas: PKCanvasView) {
+            canvasToolSignature = signature(of: canvas.tool)
+            toolPollTimer?.invalidate()
+            toolPollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self, weak canvas] _ in
+                guard let self, let canvas else { return }
+                let sig = self.signature(of: canvas.tool)
+                guard sig != self.canvasToolSignature else { return }
+                self.canvasToolSignature = sig
+                self.lastToolSignature = sig
+                // 系统轻捏把工具改了，同步回 SwiftUI
+                if canvas.tool is PKEraserTool {
                     self.parent.onPinchToggleToolIfNeeded(true)
-                } else if t is PKInkingTool {
+                } else if canvas.tool is PKInkingTool {
                     self.parent.onPinchToggleToolIfNeeded(false)
                 }
             }
         }
+
+        deinit { toolPollTimer?.invalidate() }
 
         /// PKTool 没有可比较的描述，自己拼一个签名
         private func signature(of tool: PKTool) -> String {
@@ -113,9 +121,8 @@ struct InkCanvasView: UIViewRepresentable {
             let sig = signature(of: tool)
             guard sig != lastToolSignature else { return }
             lastToolSignature = sig
-            isApplyingTool = true
             canvas.tool = tool
-            isApplyingTool = false
+            canvasToolSignature = sig
         }
 
         // MARK: - 落笔 / 抬笔
