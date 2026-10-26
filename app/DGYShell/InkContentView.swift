@@ -42,16 +42,32 @@ struct InkContentView: View {
                 let frame = canvasFrame(in: geo.size)
 
                 if frame != .zero {
+                    let barH: CGFloat = 52
+                    // 工具栏占顶部条带，画布从它下面开始，互不遮挡
+                    let inkFrame = CGRect(x: frame.minX,
+                                          y: frame.minY + barH,
+                                          width: frame.width,
+                                          height: max(frame.height - barH, 60))
+
+                    // 画布底：白纸，盖住网站原本的作答区
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.white)
+                        .frame(width: inkFrame.width, height: inkFrame.height)
+                        .position(x: inkFrame.midX, y: inkFrame.midY)
+
                     InkCanvasView(drawing: $drawing, tool: $tool) { newDrawing in
                         saveIfNeeded(newDrawing)
                     }
-                    .frame(width: frame.width, height: frame.height)
-                    .position(x: frame.midX, y: frame.midY)
+                    .frame(width: inkFrame.width, height: inkFrame.height)
+                    .position(x: inkFrame.midX, y: inkFrame.midY)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                    )
+
+                    // 整块作答区的边框
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                        .allowsHitTesting(false)
 
                     InkToolbar(tool: $tool,
                                color: $penColor,
@@ -65,17 +81,22 @@ struct InkContentView: View {
                                onFit: { bridge.refresh() })
                         .background(.regularMaterial)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                        )
-                        .frame(width: min(frame.width, 460))
-                        .position(x: frame.midX, y: max(frame.minY - 26, 46))
+                        .frame(width: frame.width, height: barH)
+                        .position(x: frame.midX, y: frame.minY + barH / 2)
                 }
 
-                // 顶部状态条：题号 + 存档状态
-                header
-                    .allowsHitTesting(false)
+                // 存盘提示：只在动作后短暂出现，不挡题目和翻页
+                if !status.isEmpty {
+                    Text(status)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.55), in: Capsule())
+                        .position(x: frame.midX, y: frame.maxY - 18)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
             }
             .onChange(of: bridge.pageKey) { newKey in
                 switchTo(key: newKey)
@@ -96,26 +117,6 @@ struct InkContentView: View {
             }
         }
         .preferredColorScheme(.light)
-    }
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            if !bridge.questionID.isEmpty {
-                Text("第 \(bridge.questionID) 题")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-            }
-            if !status.isEmpty {
-                Text(status)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .padding(.leading, 14)
-        .padding(.top, 8)
     }
 
     // MARK: - 存档
