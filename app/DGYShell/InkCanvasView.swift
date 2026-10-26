@@ -88,9 +88,9 @@ struct InkCanvasView: UIViewRepresentable {
                 guard !self.isApplyingTool else { return }
                 self.lastToolSignature = self.signature(of: t)
                 if t is PKEraserTool {
-                    self.parent.onPinchToggleToolIfNeeded(eraser: true)
+                    self.parent.onPinchToggleToolIfNeeded(true)
                 } else if t is PKInkingTool {
-                    self.parent.onPinchToggleToolIfNeeded(eraser: false)
+                    self.parent.onPinchToggleToolIfNeeded(false)
                 }
             }
         }
