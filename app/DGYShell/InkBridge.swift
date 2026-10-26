@@ -110,6 +110,14 @@ let inkBootstrapJS = #"""
       (document.head || document.documentElement).appendChild(tag);
     }
     if (tag.textContent !== LAYOUT_CSS) tag.textContent = LAYOUT_CSS;
+
+    // 作答三键原本挂在白色卡片里，即使 fixed 也会带出白底。
+    // 搬到 body 下，脱离那个容器。
+    // 网站重渲染会把节点搬回去，所以每次 applyLayout 都检查一遍。
+    var act = document.querySelector('div[class*="_answerActions_"]');
+    if (act && act.parentElement && act.parentElement.tagName !== 'BODY') {
+      try { document.body.appendChild(act); } catch (e) {}
+    }
   }
   window.__inkLayout = applyLayout;
 
