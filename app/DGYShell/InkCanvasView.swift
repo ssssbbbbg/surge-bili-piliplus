@@ -8,6 +8,13 @@ struct InkCanvasView: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     @Binding var tool: PKTool
     var onDrawingChanged: (PKDrawing) -> Void
+    /// 双指捏合：在笔和橡皮之间来回切（照无边记的手感）
+    var onPinchToggleTool: () -> Void = {}
+    /// 系统轻捏改了工具后，把状态同步回 SwiftUI（只更新高亮，不再改 canvas）
+    var onPinchToggleToolIfNeeded: (Bool) -> Void = { _ in }
+    /// 落笔/抬笔。用来判断是否该把工具栏收起来
+    var onStrokeBegan: () -> Void = {}
+    var onStrokeEnded: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -22,8 +29,31 @@ struct InkCanvasView: UIViewRepresentable {
         canvas.alwaysBounceHorizontal = false
         canvas.showsVerticalScrollIndicator = false
         canvas.showsHorizontalScrollIndicator = false
-        canvas.contentSize = UIScreen.main.bounds.size
+        // 画布固定尺寸，不允许用户缩放或滚动，
+        // 否则双指捏合会变成整体平移，笔迹跟纸就错位了
+        canvas.isScrollEnabled = false
         canvas.drawing = drawing
+
+        // 双指捏合切工具。要求两个手指，避开单指滚动。
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator,
+                                             action: #selector(Coordinator.handlePinch(_:)))
+        pinch.delegate = context.coordinator
+        pinch.cancelsTouchesInView = false
+        // 不要缩放：这块画布固定尺寸，缩放只会错位
+        canvas.minimumZoomScale = 1
+        canvas.maximumZoomScale = 1
+        canvas.addGestureRecognizer(pinch)
+        context.coordinator.pinch = pinch
+
+        // Pencil Pro 轻捏 / 轻点两下：UIPencilInteraction 是唯一的官方入口。
+        // 用户的偏好（切橡皮 / 切上一个工具 / 调色盘）在系统设置里，
+        // 这里读 preferredSqueezeAction，照它的意图执行。
+        let pencil = UIPencilInteraction()
+        pencil.delegate = context.coordinator
+        pencil.isEnabled = true
+        canvas.addInteraction(pencil)
+
+        context.coordinator.observeTool(canvas)
 
         return canvas
     }
@@ -38,12 +68,32 @@ struct InkCanvasView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
+    final class Coordinator: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegate, UIPencilInteractionDelegate {
         var parent: InkCanvasView
         var isUpdating = false
         private var lastToolSignature: String = ""
+        weak var pinch: UIPinchGestureRecognizer?
+        private var pinchFired = false
+        private var toolObservation: NSKeyValueObservation?
+        /// 我们自己设 tool 时置位，避免 KVO 又把它当成用户轻捏
+        var isApplyingTool = false
 
         init(_ parent: InkCanvasView) { self.parent = parent }
+
+        /// 系统轻捏（Pencil Pro）会直接改 canvas.tool，
+        /// 用 KVO 把它同步回 SwiftUI 状态，工具栏高亮才不会脱节
+        func observeTool(_ canvas: PKCanvasView) {
+            toolObservation = canvas.observe(\.tool, options: [.new]) { [weak self] _, change in
+                guard let self, let t = change.newValue else { return }
+                guard !self.isApplyingTool else { return }
+                self.lastToolSignature = self.signature(of: t)
+                if t is PKEraserTool {
+                    self.parent.onPinchToggleToolIfNeeded(eraser: true)
+                } else if t is PKInkingTool {
+                    self.parent.onPinchToggleToolIfNeeded(eraser: false)
+                }
+            }
+        }
 
         /// PKTool 没有可比较的描述，自己拼一个签名
         private func signature(of tool: PKTool) -> String {
@@ -63,7 +113,96 @@ struct InkCanvasView: UIViewRepresentable {
             let sig = signature(of: tool)
             guard sig != lastToolSignature else { return }
             lastToolSignature = sig
+            isApplyingTool = true
             canvas.tool = tool
+            isApplyingTool = false
+        }
+
+        // MARK: - 落笔 / 抬笔
+
+        func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+            parent.onStrokeBegan()
+        }
+
+        func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+            parent.onStrokeEnded()
+        }
+
+        // MARK: - Apple Pencil 轻捏 / 轻点两下（UIPencilInteraction）
+
+        /// 轻捏。Pencil Pro 才有。
+        /// 用户偏好从 UIPencilInteraction.preferredSqueezeAction 读，
+        /// 我们在系统设置里已经选成「切换当前工具和橡皮擦」。
+        @available(iOS 17.5, *)
+        func pencilInteraction(_ interaction: UIPencilInteraction,
+                               didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+            guard squeeze.phase == .ended else { return }
+
+            switch UIPencilInteraction.preferredSqueezeAction {
+            case .switchEraser:
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                parent.onPinchToggleTool()
+            case .switchPrevious:
+                // 切到上一个用过的工具
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                parent.onPinchToggleTool()
+            case .showColorPalette, .showInkAttributes, .showContextualPalette:
+                // 调色盘这类交给系统 / 我们自己的工具条，
+                // 这里只做个提示音，不抢行为
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            default:
+                break
+            }
+        }
+
+        /// 轻点两下（Pencil 2 / Pencil Pro 都支持）。
+        /// UIPencilInteraction.Tap 没有 phase 属性 —— 只在已经结束时回调一次，
+        /// 所以这里直接处理，不用判相位。
+        @available(iOS 17.5, *)
+        func pencilInteraction(_ interaction: UIPencilInteraction,
+                               didReceiveTap tap: UIPencilInteraction.Tap) {
+            switch UIPencilInteraction.preferredTapAction {
+            case .switchEraser, .switchPrevious:
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                parent.onPinchToggleTool()
+            default:
+                break
+            }
+        }
+
+        /// 老的双击回调（iOS 12.1 起）。iOS 17.5+ 会被上面那个取代，
+        /// 但低版本设备只有这个能收到。
+        func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+            if #available(iOS 17.5, *) { return }   // 新系统走带 Tap 的那个
+            if UIPencilInteraction.preferredTapAction == .switchEraser {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                parent.onPinchToggleTool()
+            }
+        }
+
+        @objc func handlePinch(_ g: UIPinchGestureRecognizer) {
+            switch g.state {
+            case .began:
+                pinchFired = false
+            case .changed:
+                // 攥到 78% 以下才算数，避免误触
+                if !pinchFired && g.scale < 0.75 {
+                    pinchFired = true
+                    // 捏合震动一下，跟系统手感一致
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    parent.onPinchToggleTool()
+                }
+            case .ended, .cancelled, .failed:
+                pinchFired = false
+            default:
+                break
+            }
+        }
+
+        /// 让捏合手势优先于画布的滚动/缩放
+        func gestureRecognizer(_ g: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
@@ -86,7 +225,7 @@ struct InkToolbar: View {
     var onUndo: () -> Void
     var onRedo: () -> Void
     var onClear: () -> Void
-    var onFit: () -> Void
+    var onHide: () -> Void
 
     private let palette: [Color] = [.black, .red, .blue, .green, .orange, .purple]
 
@@ -155,7 +294,7 @@ struct InkToolbar: View {
             icon("arrow.uturn.backward", enabled: canUndo, action: onUndo)
             icon("arrow.uturn.forward", enabled: canRedo, action: onRedo)
             icon("trash", enabled: true, action: onClear)
-            icon("arrow.down.right.and.arrow.up.left", enabled: true, action: onFit)
+            icon("chevron.up", enabled: true, action: onHide)
 
             Spacer(minLength: 0)
         }

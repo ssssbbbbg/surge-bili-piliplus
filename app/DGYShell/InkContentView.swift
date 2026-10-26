@@ -4,9 +4,9 @@ import PencilKit
 
 // MARK: - 主视图
 // 三层叠起来：
-//   1. WKWebView  —— 原站点，铺满
+//   1. WKWebView   —— 原站点，铺满
 //   2. PKCanvasView —— 精确盖住网页的作答区（用注入脚本量出来的坐标）
-//   3. 工具条 —— 浮在笔迹区顶部
+//   3. 工具条      —— 浮在笔迹区顶部，落笔即收起，停笔自动浮回
 struct InkContentView: View {
 
     @StateObject private var bridge = InkBridge()
@@ -22,13 +22,17 @@ struct InkContentView: View {
 
     @State private var lastKey: String = ""
     @State private var status: String = ""
-    @State private var showHUD = false
 
-    // 网页坐标系 → SwiftUI 坐标系的换算。WKWebView 与容器同原点时就是 1:1
+    // 工具栏自动隐藏
+    @State private var barVisible = true
+    @State private var hideTask: Task<Void, Never>? = nil
+    @State private var writing = false
+    /// 用户手动收起后锁住，落笔/抬笔都不再自动弹出，只有点把手才回来
+    @State private var barPinned = false
+
     private func canvasFrame(in size: CGSize) -> CGRect {
         let r = bridge.targetRect
         guard r.width > 20, r.height > 20 else { return .zero }
-        // 网页 viewport 与 WKWebView 的 bounds 可能有缩放差（用户缩放）
         return r
     }
 
@@ -42,50 +46,82 @@ struct InkContentView: View {
                 let frame = canvasFrame(in: geo.size)
 
                 if frame != .zero {
-                    let barH: CGFloat = 52
-                    // 工具栏占顶部条带，画布从它下面开始，互不遮挡
-                    let inkFrame = CGRect(x: frame.minX,
-                                          y: frame.minY + barH,
-                                          width: frame.width,
-                                          height: max(frame.height - barH, 60))
-
-                    // 画布底：白纸，盖住网站原本的作答区
+                    // 画布铺满整个作答区，工具栏只做浮层，不再占高度
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.white)
-                        .frame(width: inkFrame.width, height: inkFrame.height)
-                        .position(x: inkFrame.midX, y: inkFrame.midY)
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
 
-                    InkCanvasView(drawing: $drawing, tool: $tool) { newDrawing in
-                        saveIfNeeded(newDrawing)
-                    }
-                    .frame(width: inkFrame.width, height: inkFrame.height)
-                    .position(x: inkFrame.midX, y: inkFrame.midY)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    InkCanvasView(drawing: $drawing,
+                                  tool: $tool,
+                                  onDrawingChanged: { newDrawing in
+                                      saveIfNeeded(newDrawing)
+                                  },
+                                  onPinchToggleTool: {
+                                      toggleToolByPinch()
+                                  },
+                                  onPinchToggleToolIfNeeded: { eraser in
+                                      syncToolFromPencil(eraser: eraser)
+                                  },
+                                  onStrokeBegan: {
+                                      onStrokeBegan()
+                                  },
+                                  onStrokeEnded: {
+                                      scheduleBarShow()
+                                  })
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                    // 整块作答区的边框
+                    // 边框
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
                         .allowsHitTesting(false)
 
-                    InkToolbar(tool: $tool,
-                               color: $penColor,
-                               width: $penWidth,
-                               isEraser: $isEraser,
-                               canUndo: !undoStack.isEmpty,
-                               canRedo: !redoStack.isEmpty,
-                               onUndo: undo,
-                               onRedo: redo,
-                               onClear: clear,
-                               onFit: { bridge.refresh() })
-                        .background(.regularMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .frame(width: frame.width, height: barH)
-                        .position(x: frame.midX, y: frame.minY + barH / 2)
+                    // 浮层工具栏
+                    if barVisible {
+                        InkToolbar(tool: $tool,
+                                   color: $penColor,
+                                   width: $penWidth,
+                                   isEraser: $isEraser,
+                                   canUndo: !undoStack.isEmpty,
+                                   canRedo: !redoStack.isEmpty,
+                                   onUndo: undo,
+                                   onRedo: redo,
+                                   onClear: clear,
+                                   onHide: { hideBar() })
+                            .background(.regularMaterial)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                            )
+                            .frame(width: frame.width, height: 52)
+                            .position(x: frame.midX, y: frame.minY + 26)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    } else {
+                        // 收起后只留一个小把手，点一下立刻展开
+                        Button {
+                            showBar()
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, height: 18)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .position(x: frame.midX, y: frame.minY + 10)
+                    }
                 }
 
-                // 存盘提示：只在动作后短暂出现，不挡题目和翻页
+                // 存盘提示
                 if !status.isEmpty {
                     Text(status)
                         .font(.system(size: 11, weight: .medium))
@@ -98,14 +134,15 @@ struct InkContentView: View {
                         .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.18), value: barVisible)
             .onChange(of: bridge.pageKey) { newKey in
                 switchTo(key: newKey)
-            }
-            .onChange(of: bridge.targetRect) { _ in
-                // 布局稳定后再量一次，防止首帧坐标偏
+                barPinned = false
+                showBar()
             }
             .onAppear {
                 if !bridge.pageKey.isEmpty { switchTo(key: bridge.pageKey) }
+                scheduleBarShow()
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: UIApplication.willResignActiveNotification)) { _ in
@@ -119,16 +156,97 @@ struct InkContentView: View {
         .preferredColorScheme(.light)
     }
 
+    // MARK: - 工具栏收放
+
+    /// 落笔：立刻收起，把纸让出来
+    private func onStrokeBegan() {
+        writing = true
+        hideTask?.cancel()
+        // 手动收起状态下本来就看不见，不用动
+        if barVisible && !barPinned {
+            barVisible = false
+        }
+    }
+
+    /// 抬笔：等一会儿再浮回来，别打断思路。
+    /// 手动收起的状态下不自动弹。
+    private func scheduleBarShow() {
+        writing = false
+        hideTask?.cancel()
+        guard !barPinned else { return }
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled, !writing, !barPinned else { return }
+            barVisible = true
+        }
+    }
+
+    /// 点把手 / 用工具后主动展开，解除手动锁
+    private func showBar() {
+        hideTask?.cancel()
+        barPinned = false
+        barVisible = true
+        scheduleBarShow()
+    }
+
+    /// 用户主动收起：锁住，不再自动浮回，等他点把手
+    private func hideBar() {
+        hideTask?.cancel()
+        writing = false
+        barPinned = true
+        barVisible = false
+    }
+
+    // MARK: - 工具同步
+
+    /// 系统轻捏已经改了 canvas.tool，这里把 SwiftUI 的 tool 也对齐，
+    /// 否则下一帧 updateUIView 会覆盖回去
+    private func syncToolFromPencil(eraser: Bool) {
+        if eraser {
+            if !isEraser {
+                isEraser = true
+                if #available(iOS 16.4, *) {
+                    tool = PKEraserTool(.bitmap, width: 20.0 as CGFloat)
+                } else {
+                    tool = PKEraserTool(.bitmap)
+                }
+                flash("橡皮")
+            }
+        } else {
+            if isEraser {
+                isEraser = false
+                tool = PKInkingTool(.pen, color: UIColor(penColor), width: penWidth)
+                flash("笔")
+            }
+        }
+    }
+
+    /// 双指捏合：笔 ⇄ 橡皮
+    private func toggleToolByPinch() {
+        if isEraser {
+            isEraser = false
+            tool = PKInkingTool(.pen, color: UIColor(penColor), width: penWidth)
+        } else {
+            isEraser = true
+            if #available(iOS 16.4, *) {
+                tool = PKEraserTool(.bitmap, width: 20.0 as CGFloat)
+            } else {
+                tool = PKEraserTool(.bitmap)
+            }
+        }
+        flash(isEraser ? "橡皮" : "笔")
+        showBar()
+    }
+
     // MARK: - 存档
 
     private func switchTo(key: String) {
         guard !key.isEmpty, key != lastKey else { return }
-        // 先把上一题的笔迹落盘
         if !lastKey.isEmpty {
             _ = InkStore.shared.save(drawing,
                                      key: lastKey,
                                      title: "第 \(bridge.questionID) 题",
-                                     source: key)
+                                     source: lastKey)
         }
         let loaded = InkStore.shared.load(key)
         drawing = loaded
@@ -146,7 +264,6 @@ struct InkContentView: View {
                                  source: lastKey)
     }
 
-    /// 退出、切后台前强制落盘，保证一笔不丢
     private func flush() {
         guard !lastKey.isEmpty else { return }
         _ = InkStore.shared.save(drawing,
@@ -161,6 +278,7 @@ struct InkContentView: View {
         redoStack.append(drawing)
         drawing = prev
         saveIfNeeded(prev)
+        showBar()
     }
 
     private func redo() {
@@ -168,6 +286,7 @@ struct InkContentView: View {
         undoStack.append(drawing)
         drawing = next
         saveIfNeeded(next)
+        showBar()
     }
 
     private func clear() {
@@ -176,6 +295,7 @@ struct InkContentView: View {
         drawing = PKDrawing()
         saveIfNeeded(drawing)
         flash("清空")
+        showBar()
     }
 
     private func flash(_ text: String) {
@@ -187,7 +307,6 @@ struct InkContentView: View {
 }
 
 // MARK: - WebView 包装
-// 保留原工程里的导航逻辑（弹窗、外链拦截），只加注入脚本和消息桥
 struct InkWebPane: UIViewRepresentable {
 
     let bridge: InkBridge
