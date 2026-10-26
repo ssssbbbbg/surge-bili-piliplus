@@ -29,9 +29,7 @@ struct InkCanvasView: UIViewRepresentable {
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
-        var needsTool = false
-        if canvas.tool.description != tool.description { needsTool = true }
-        if needsTool { canvas.tool = tool }
+        context.coordinator.applyToolIfNeeded(canvas, tool: tool)
 
         if canvas.drawing.dataRepresentation() != drawing.dataRepresentation() {
             context.coordinator.isUpdating = true
@@ -43,8 +41,30 @@ struct InkCanvasView: UIViewRepresentable {
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: InkCanvasView
         var isUpdating = false
+        private var lastToolSignature: String = ""
 
         init(_ parent: InkCanvasView) { self.parent = parent }
+
+        /// PKTool 没有可比较的描述，自己拼一个签名
+        private func signature(of tool: PKTool) -> String {
+            if let pen = tool as? PKInkingTool {
+                let c = pen.color
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                c.getRed(&r, green: &g, blue: &b, alpha: &a)
+                return String(format: "ink-%.3f-%.3f-%.3f-%.3f-%.2f-%@",
+                              r, g, b, a, pen.width, String(describing: pen.inkType))
+            }
+            if tool is PKEraserTool { return "eraser" }
+            if tool is PKLassoTool { return "lasso" }
+            return "other"
+        }
+
+        func applyToolIfNeeded(_ canvas: PKCanvasView, tool: PKTool) {
+            let sig = signature(of: tool)
+            guard sig != lastToolSignature else { return }
+            lastToolSignature = sig
+            canvas.tool = tool
+        }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             guard !isUpdating else { return }
@@ -81,7 +101,11 @@ struct InkToolbar: View {
                 }
                 segment(icon: "eraser", active: isEraser) {
                     isEraser = true
-                    tool = PKEraserTool(.bitmap, width: 20)
+                    if #available(iOS 16.4, *) {
+                        tool = PKEraserTool(.bitmap, width: 20.0 as CGFloat)
+                    } else {
+                        tool = PKEraserTool(.bitmap)
+                    }
                 }
             }
             .background(Color.black.opacity(0.06))
