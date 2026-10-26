@@ -1,0 +1,163 @@
+import SwiftUI
+import PencilKit
+
+// MARK: - PencilKit 画布
+// 覆盖在网页作答区上方。原生笔迹：压感、倾斜、平滑、防误触都是系统级。
+struct InkCanvasView: UIViewRepresentable {
+
+    @Binding var drawing: PKDrawing
+    @Binding var tool: PKTool
+    var onDrawingChanged: (PKDrawing) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> PKCanvasView {
+        let canvas = PKCanvasView()
+        canvas.backgroundColor = .clear
+        canvas.isOpaque = false
+        canvas.drawingPolicy = .pencilOnly      // 手指只用来滚动，笔才画
+        canvas.tool = tool
+        canvas.delegate = context.coordinator
+        canvas.alwaysBounceVertical = false
+        canvas.alwaysBounceHorizontal = false
+        canvas.showsVerticalScrollIndicator = false
+        canvas.showsHorizontalScrollIndicator = false
+        canvas.contentSize = UIScreen.main.bounds.size
+        canvas.drawing = drawing
+
+        return canvas
+    }
+
+    func updateUIView(_ canvas: PKCanvasView, context: Context) {
+        var needsTool = false
+        if canvas.tool.description != tool.description { needsTool = true }
+        if needsTool { canvas.tool = tool }
+
+        if canvas.drawing.dataRepresentation() != drawing.dataRepresentation() {
+            context.coordinator.isUpdating = true
+            canvas.drawing = drawing
+            context.coordinator.isUpdating = false
+        }
+    }
+
+    final class Coordinator: NSObject, PKCanvasViewDelegate {
+        var parent: InkCanvasView
+        var isUpdating = false
+
+        init(_ parent: InkCanvasView) { self.parent = parent }
+
+        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            guard !isUpdating else { return }
+            parent.drawing = canvasView.drawing
+            parent.onDrawingChanged(canvasView.drawing)
+        }
+    }
+}
+
+// MARK: - 工具栏
+struct InkToolbar: View {
+
+    @Binding var tool: PKTool
+    @Binding var color: Color
+    @Binding var width: CGFloat
+    @Binding var isEraser: Bool
+    var canUndo: Bool
+    var canRedo: Bool
+    var onUndo: () -> Void
+    var onRedo: () -> Void
+    var onClear: () -> Void
+    var onFit: () -> Void
+
+    private let palette: [Color] = [.black, .red, .blue, .green, .orange, .purple]
+
+    var body: some View {
+        HStack(spacing: 10) {
+
+            // 笔 / 橡皮
+            HStack(spacing: 0) {
+                segment(icon: "pencil.tip", active: !isEraser) {
+                    isEraser = false
+                    tool = PKInkingTool(.pen, color: UIColor(color), width: width)
+                }
+                segment(icon: "eraser", active: isEraser) {
+                    isEraser = true
+                    tool = PKEraserTool(.bitmap, width: 20)
+                }
+            }
+            .background(Color.black.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            Divider().frame(height: 22)
+
+            // 颜色
+            HStack(spacing: 8) {
+                ForEach(palette.indices, id: \.self) { i in
+                    Circle()
+                        .fill(palette[i])
+                        .frame(width: 20, height: 20)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(Color.primary.opacity(color == palette[i] ? 0.55 : 0),
+                                              lineWidth: 2)
+                                .padding(-3)
+                        )
+                        .onTapGesture {
+                            color = palette[i]
+                            isEraser = false
+                            tool = PKInkingTool(.pen, color: UIColor(palette[i]), width: width)
+                        }
+                }
+            }
+
+            Divider().frame(height: 22)
+
+            // 粗细
+            HStack(spacing: 6) {
+                ForEach([1.5, 3.0, 6.0], id: \.self) { w in
+                    Circle()
+                        .fill(Color.primary.opacity(width == CGFloat(w) ? 0.85 : 0.28))
+                        .frame(width: CGFloat(w * 2.2), height: CGFloat(w * 2.2))
+                        .frame(width: 26, height: 26)
+                        .onTapGesture {
+                            width = CGFloat(w)
+                            isEraser = false
+                            tool = PKInkingTool(.pen, color: UIColor(color), width: CGFloat(w))
+                        }
+                }
+            }
+
+            Divider().frame(height: 22)
+
+            icon("arrow.uturn.backward", enabled: canUndo, action: onUndo)
+            icon("arrow.uturn.forward", enabled: canRedo, action: onRedo)
+            icon("trash", enabled: true, action: onClear)
+            icon("arrow.down.right.and.arrow.up.left", enabled: true, action: onFit)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func segment(icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 38, height: 32)
+                .background(active ? Color.white : Color.clear)
+                .foregroundStyle(active ? Color.black : Color.secondary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func icon(_ name: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: name)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(enabled ? Color.primary : Color.secondary.opacity(0.35))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+}
