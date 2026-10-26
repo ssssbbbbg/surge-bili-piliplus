@@ -55,25 +55,51 @@ let inkBootstrapJS = #"""
 
   // 版面改造：作答三键挪到右上角，翻页挪到左下角，顶部翻页隐藏
   var LAYOUT_CSS = [
+    // ── 右上：不熟练 / 不会 / 掌握 ──
+    // 裸字样式，融进顶栏，不画胶囊
     'div[class*="_answerActions_"]{',
-    '  position:fixed !important; top:2px !important; right:84px !important;',
+    '  position:fixed !important; top:0 !important; right:92px !important;',
     '  bottom:auto !important; left:auto !important; width:auto !important;',
-    '  height:auto !important; padding:0 !important; margin:0 !important;',
+    '  height:44px !important; padding:0 !important; margin:0 !important;',
     '  background:transparent !important; border:none !important;',
-    '  z-index:60 !important; display:flex !important;',
-    '  align-items:center !important; gap:8px !important;',
+    '  box-shadow:none !important; z-index:60 !important;',
+    '  display:flex !important; align-items:center !important; gap:2px !important;',
     '}',
     'div[class*="_answerActions_"] button{',
-    '  height:34px !important; padding:0 14px !important;',
-    '  font-size:14px !important; border-radius:17px !important;',
-    '  background:#fff !important; border:1px solid rgba(0,0,0,0.10) !important;',
+    '  height:32px !important; padding:0 10px !important;',
+    '  font-size:13px !important; border-radius:0 !important;',
+    '  background:transparent !important; background-color:transparent !important;',
+    '  border:none !important; box-shadow:none !important;',
+    '  white-space:nowrap !important; color:#333 !important;',
     '}',
+    'div[class*="_answerActions_"] button[data-state],',
+    'div[class*="_answerActions_"] button[aria-pressed]{background:transparent !important;}',
+    'div[class*="_answerActions_"] button:hover{background:rgba(0,0,0,0.04) !important;}',
+    'div[class*="_answerActions_"] button svg{opacity:0.45 !important; width:15px !important; height:15px !important;}',
+
+    // ── 顶部翻页箭头：隐藏 ──
     'nav[class*="_focusHeaderNavigation"]{display:none !important;}',
+
+    // ── 底部翻页：贴左，右移放大，拉开间距 ──
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"]{',
     '  display:flex !important; position:absolute !important;',
-    '  left:150px !important; bottom:5px !important;',
-    '  flex:0 0 auto !important; align-items:center; gap:10px; z-index:30;',
-    '}'
+    '  left:200px !important; bottom:4px !important;',
+    '  width:auto !important; flex:0 0 auto !important;',
+    '  align-items:center !important; gap:14px !important; z-index:30 !important;',
+    '  pointer-events:none !important; background:transparent !important; border:none !important;',
+    '}',
+    'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button{',
+    '  pointer-events:auto !important;',
+    '  background:transparent !important; background-color:transparent !important;',
+    '  border:none !important; box-shadow:none !important; border-radius:0 !important;',
+    '  height:33px !important; padding:0 12px !important;',
+    '  font-size:15px !important; color:#333 !important;',
+    '}',
+    'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button:hover{background:rgba(0,0,0,0.04) !important;}',
+    'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button svg{width:19px !important; height:19px !important;}',
+
+    // 中间那串「← / → 切题」提示去掉
+    'footer[class*="_focusFooter"] span[class*="_focusNavigationHint_"]{display:none !important;}'
   ].join('\n');
 
   function applyLayout() {
