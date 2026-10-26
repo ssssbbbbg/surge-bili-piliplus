@@ -55,10 +55,31 @@ let inkBootstrapJS = #"""
 
   // 版面改造：作答三键挪到右上角，翻页挪到左下角，顶部翻页隐藏
   var LAYOUT_CSS = [
-    // ── 右上：不熟练 / 不会 / 掌握 ──
-    // 裸字样式，融进顶栏，不画胶囊
+    // ── 1. 掌握/不会/不熟练 那组的白色圆角底 ──
+    // 白底在包裹层 _masterySegments_ 上，不是按钮自己。
+    // 只清这一层，绝不能用 > * 打到子元素，否则整页布局会塌。
+    // 这个容器自带 1px 灰边框和白色滑块，只清底色会剩一圈空心竖框。
+    // 边框、滑块、按钮自身底色都要一起清掉。
+    'div[class*="_masterySegments_"]{',
+    '  background:transparent !important;',
+    '  background-color:transparent !important;',
+    '  border:none !important;',
+    '  border-width:0 !important;',
+    '  border-radius:0 !important;',
+    '  box-shadow:none !important;',
+    '}',
+    // 选中态那个白色滑块
+    'span[class*="_masteryThumb_"]{display:none !important;}',
+    // 三个按钮本身
+    'div[class*="_masterySegments_"] button{',
+    '  background:transparent !important;',
+    '  border:none !important;',
+    '  box-shadow:none !important;',
+    '}',
+
+    // ── 2. 三键组挪到右上，往左收，避开布局/设置图标 ──
     'div[class*="_answerActions_"]{',
-    '  position:fixed !important; top:0 !important; right:92px !important;',
+    '  position:fixed !important; top:0 !important; right:130px !important;',
     '  bottom:auto !important; left:auto !important; width:auto !important;',
     '  height:44px !important; padding:0 !important; margin:0 !important;',
     '  background:transparent !important; border:none !important;',
@@ -74,28 +95,28 @@ let inkBootstrapJS = #"""
     '}',
     'div[class*="_answerActions_"] button[data-state],',
     'div[class*="_answerActions_"] button[aria-pressed]{background:transparent !important;}',
-    'div[class*="_answerActions_"] button:hover{background:rgba(0,0,0,0.04) !important;}',
     'div[class*="_answerActions_"] button svg{opacity:0.45 !important; width:15px !important; height:15px !important;}',
 
-    // ── 顶部翻页箭头：隐藏 ──
+    // ── 3. 顶部翻页箭头：隐藏 ──
     'nav[class*="_focusHeaderNavigation"]{display:none !important;}',
 
-    // ── 底部翻页：贴左，右移放大，拉开间距 ──
+    // ── 4. 底部翻页：垂直居中对齐左侧图标行 ──
+    // 图标行中心 y≈806.3，footer 高 41，用 50% + translateY 对齐，
+    // 这样不会出现上方的空隙。
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"]{',
     '  display:flex !important; position:absolute !important;',
-    '  left:200px !important; bottom:4px !important;',
-    '  width:auto !important; flex:0 0 auto !important;',
+    '  left:200px !important; top:50% !important; transform:translateY(-50%) !important;',
+    '  bottom:auto !important; width:auto !important; flex:0 0 auto !important;',
     '  align-items:center !important; gap:14px !important; z-index:30 !important;',
-    '  pointer-events:none !important; background:transparent !important; border:none !important;',
+    '  background:transparent !important; border:none !important;',
     '}',
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button{',
-    '  pointer-events:auto !important;',
     '  background:transparent !important; background-color:transparent !important;',
     '  border:none !important; box-shadow:none !important; border-radius:0 !important;',
-    '  height:33px !important; padding:0 12px !important;',
+    '  height:31px !important; padding:0 12px !important;',
     '  font-size:15px !important; color:#333 !important;',
+    '  display:inline-flex !important; align-items:center !important;',
     '}',
-    'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button:hover{background:rgba(0,0,0,0.04) !important;}',
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button svg{width:19px !important; height:19px !important;}',
 
     // 中间那串「← / → 切题」提示去掉
@@ -111,13 +132,8 @@ let inkBootstrapJS = #"""
     }
     if (tag.textContent !== LAYOUT_CSS) tag.textContent = LAYOUT_CSS;
 
-    // 作答三键原本挂在白色卡片里，即使 fixed 也会带出白底。
-    // 搬到 body 下，脱离那个容器。
-    // 网站重渲染会把节点搬回去，所以每次 applyLayout 都检查一遍。
-    var act = document.querySelector('div[class*="_answerActions_"]');
-    if (act && act.parentElement && act.parentElement.tagName !== 'BODY') {
-      try { document.body.appendChild(act); } catch (e) {}
-    }
+    // 注：不要移动 DOM 节点。白底在 _masterySegments_ 上，用 CSS 清即可。
+    // 搬节点会破坏网站自己的布局，导致半屏塌陷。
   }
   window.__inkLayout = applyLayout;
 
