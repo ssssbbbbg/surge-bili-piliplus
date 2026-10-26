@@ -21,6 +21,7 @@ let inkBootstrapJS = #"""
   window.__inkHooked = true;
 
   var lastQ = null;
+  var lastOverlay = false;
 
   function qnum() {
     var el = document.querySelector('strong[class*="_number_"]');
@@ -105,9 +106,9 @@ let inkBootstrapJS = #"""
     // 这样不会出现上方的空隙。
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"]{',
     '  display:flex !important; position:absolute !important;',
-    '  left:250px !important; top:50% !important; transform:translateY(-50%) !important;',
+    '  left:215px !important; top:50% !important; transform:translateY(-50%) !important;',
     '  bottom:auto !important; width:auto !important; flex:0 0 auto !important;',
-    '  align-items:center !important; gap:28px !important; z-index:30 !important;',
+    '  align-items:center !important; gap:18px !important; z-index:30 !important;',
     '  background:transparent !important; border:none !important;',
     '}',
     'footer[class*="_focusFooter"] nav[class*="_singleQuestionNavigation"] button{',
@@ -137,13 +138,52 @@ let inkBootstrapJS = #"""
   }
   window.__inkLayout = applyLayout;
 
+  // 网页弹层检测。
+  // 站点的弹窗结构（实测）：
+  //   遮罩 div.ds-overlay-layer.fixed.inset-0.z-[60].bg-backdrop
+  //   面板 div.ds-overlay-surface._dialog_  role="dialog"
+  // 出现任意一个且可见，就认为弹层盖住了界面，原生手写板需要让开。
+  function overlayVisible() {
+    // 1. role=dialog 且可见
+    var dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+    for (var i = 0; i < dialogs.length; i++) {
+      var r = dialogs[i].getBoundingClientRect();
+      if (r.width > 120 && r.height > 80) return true;
+    }
+    // 2. 站点遮罩层
+    var masks = document.querySelectorAll('[class*="overlay-layer"], [class*="bg-backdrop"]');
+    for (var j = 0; j < masks.length; j++) {
+      var m = masks[j];
+      var mr = m.getBoundingClientRect();
+      if (mr.width < 200 || mr.height < 200) continue;
+      var mc = getComputedStyle(m);
+      if (mc.display === 'none' || mc.visibility === 'hidden') continue;
+      if (parseFloat(mc.opacity) < 0.05) continue;
+      return true;
+    }
+    // 3. 兜底：固定定位、半透明深色、铺满大半屏的元素
+    var all = document.querySelectorAll('div');
+    for (var k = 0; k < all.length; k++) {
+      var e = all[k];
+      var cs = getComputedStyle(e);
+      if (cs.position !== 'fixed') continue;
+      var er = e.getBoundingClientRect();
+      if (er.width < innerWidth * 0.8 || er.height < innerHeight * 0.8) continue;
+      var bg = cs.backgroundColor || '';
+      var mm = bg.match(/rgba\(\s*\d+,\s*\d+,\s*\d+,\s*([\d.]+)\s*\)/);
+      if (mm && parseFloat(mm[1]) > 0.15 && parseFloat(mm[1]) < 0.95) return true;
+    }
+    return false;
+  }
+  window.__inkOverlayVisible = overlayVisible;
+
   function measure() {
     hideNative();
     applyLayout();
     var box = answerBox();
     var q = qnum();
     var payload = { box: box, q: q, path: location.pathname, host: location.host,
-                    ready: !!box };
+                    ready: !!box, overlay: overlayVisible() };
     try {
       window.webkit.messageHandlers.ink.postMessage(payload);
     } catch (e) {}
@@ -182,8 +222,12 @@ let inkBootstrapJS = #"""
       applyLayout();
     }
     var q = qnum();
-    if (q !== lastQ) schedule();
-  }, 700);
+    var ov = overlayVisible();
+    if (q !== lastQ || ov !== lastOverlay) {
+      lastOverlay = ov;
+      schedule();
+    }
+  }, 500);
 
   setTimeout(measure, 300);
   setTimeout(measure, 1200);
@@ -211,6 +255,9 @@ final class InkBridge: NSObject, ObservableObject, WKScriptMessageHandler {
     @Published var questionID: String = ""
     @Published var pageKey: String = ""
     @Published var ready: Bool = false
+    /// 网页是否有弹层（对话框 / 遮罩）盖住界面。
+    /// 有的话原生手写板要让开，否则会把弹层挡住。
+    @Published var overlayUp: Bool = false
 
     weak var webView: WKWebView?
 
@@ -229,12 +276,14 @@ final class InkBridge: NSObject, ObservableObject, WKScriptMessageHandler {
         let host = (body["host"] as? String) ?? ""
         let path = (body["path"] as? String) ?? ""
         let isReady = (body["ready"] as? Bool) ?? false
+        let overlay = (body["overlay"] as? Bool) ?? false
 
         DispatchQueue.main.async {
             self.targetRect = box
             self.questionID = q
             self.pageKey = InkStore.makeKey(host: host, path: path, questionID: q.isEmpty ? nil : q)
             self.ready = isReady
+            self.overlayUp = overlay
         }
     }
 

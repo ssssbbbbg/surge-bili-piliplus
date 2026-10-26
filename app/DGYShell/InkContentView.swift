@@ -45,7 +45,9 @@ struct InkContentView: View {
 
                 let frame = canvasFrame(in: geo.size)
 
-                if frame != .zero {
+                // 网页弹出对话框/遮罩时，整块手写板让开，
+                // 否则原生层会盖在网页弹层上面。关闭后自动回来。
+                if frame != .zero && !bridge.overlayUp {
                     // 画布铺满整个作答区，工具栏只做浮层，不再占高度
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.white)
